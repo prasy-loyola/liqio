@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"time"
+	"strconv"
 	t "time"
 )
 
@@ -40,56 +40,29 @@ func (d daychart) getRemaining() int {
     return remaining
 }
 
-func (d daychart) toHtmlRow() string {
+func (d daychart) toHtml() string {
 
-    result := "<tbody>"
+    table := "<tbody>"
     subtotal := 0
 
     for _, intk := range d.intakes {
-        result += "<tr>"
-        result += intk.toHtmlRow()
+        table += "<tr>"
+        table += intk.toHtmlRow()
         subtotal += intk.amount
-        result += fmt.Sprintf("<td>%d</td>", subtotal)
-        result += "</tr>"
+        table += fmt.Sprintf("<td>%d</td>", subtotal)
+        table += "</tr>"
     }
 
-    result += "</tbody>"
-    return result
-}
+    table += "</tbody>"
 
-
-func main() {
-    
-    intake1 := intake{
-        time.Now(),
-        100,
-        "Lunch",
-    }
-    intake2 := intake{
-        time.Now(),
-        50,
-        "Tablet",
-    }
-
-    today := daychart {
-        []intake{intake1, intake2},
-        1300,
-    }
-
-    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        fmt.Fprintf(w, `
-            <html>
-                <head>
-                    <title>
-                        Track your water intake
-                    </title>
-                    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.4.1/dist/css/bootstrap.min.css" integrity="sha384-Vkoo8x4CGsO3+Hhxv8T/Q5PaXtkKtu6ug5TOeNV6gBiFeWPGFN9MuhOf23Q9Ifjh" crossorigin="anonymous">
-                </head>
-                <body>
-                    <div class="container">
-                        <div >
-                            <div class="pill"> Goal: %d ml </div>
-                            <div class="pill"> Remaining: %d ml</div>
+    result := fmt.Sprintf(`<div name="data" id="data" >
+                            <h4> Goal: <span class="badge badge-primary">%d ml </span></h4>
+                            <h4> Remaining: <span class="badge badge-primary">%d ml </span></h4>
+                            <form hx-post="/intake" hx-target="#data" hx-swap>
+                                <label for="amount">Amount:</label><input type="number" name="amount"/>
+                                <label for="description">Description:</label><input type="text" name="description"/>
+                                <button type="submit">Add</button>
+                            </form>
                             <table class="table table-striped">
                                 <thead>
                                     <tr>
@@ -101,11 +74,55 @@ func main() {
                                 </thead>
                                 %s
                             </table>
-                        </div>
+                        </div>`, d.goal, d.getRemaining(), table)
+    return result
+}
+
+func main() {
+    
+    today := daychart {
+        []intake{},
+        1300,
+    }
+
+    http.HandleFunc("/intake", func(w http.ResponseWriter, r *http.Request) {
+
+        if r.Method == "POST" {
+            amount := r.PostFormValue("amount")
+            description := r.PostFormValue("description")
+            amountVal, err := strconv.Atoi(amount);
+            if err != nil {
+                log.Fatal("Amount is in invalid format")
+            } 
+
+            newIntake := intake{
+                t.Now(),
+                amountVal,
+                description,
+            }
+            today.intakes = append(today.intakes, newIntake)
+        }
+
+        fmt.Fprint(w, today.toHtml());
+    })
+
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, `
+            <html>
+                <head>
+                    <title>
+                        Track your water intake
+                    </title>
+                    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.4.1/dist/css/bootstrap.min.css" integrity="sha384-Vkoo8x4CGsO3+Hhxv8T/Q5PaXtkKtu6ug5TOeNV6gBiFeWPGFN9MuhOf23Q9Ifjh" crossorigin="anonymous">
+                      <script src="https://unpkg.com/htmx.org@1.9.6"></script>
+                </head>
+                <body>
+                    <div class="container">
+                        <div hx-get="/intake" hx-trigger="load">Fetching data...</div>
                     </div>
                 </body>
             </html>
-        `, today.goal, today.getRemaining(), today.toHtmlRow())
+        `)
     })
 
 
