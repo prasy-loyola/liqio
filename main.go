@@ -22,6 +22,8 @@ type daychart struct {
 	goal    int
 }
 
+var indiaLoc, _ = t.LoadLocation("Asia/Kolkata")
+
 func (i intake) toHtmlRow() string {
 
 	return fmt.Sprintf(`
@@ -29,8 +31,7 @@ func (i intake) toHtmlRow() string {
         <td>%d</td> 
         <td>%s</td> 
         `,
-        //TODO: change to client timezone
-		i.time.Format("03:04 pm"),
+		i.time.In(indiaLoc).Format("03:04 pm"),
 		i.amount,
 		i.description)
 }
@@ -131,7 +132,7 @@ func handleIndexPageRequest(w http.ResponseWriter, r *http.Request) {
 
 func handleIntakeRequest(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	dateParam := r.URL.Query().Get("date")
-	_, err := t.Parse("02012006", dateParam)
+	date, err := t.Parse("02012006", dateParam)
 
 	if err != nil {
 		http.Error(w, "Invalid Date", 400)
@@ -156,7 +157,7 @@ func handleIntakeRequest(db *sql.DB, w http.ResponseWriter, r *http.Request) {
     intakes, err := queryIntakes(dateParam, db)
 
     chart := daychart{
-	    t.Now(),
+        date, 
         intakes,
 	    1300,
     }
