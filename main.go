@@ -11,6 +11,7 @@ import (
 )
 
 type intake struct {
+    id          int
 	time        t.Time
 	amount      int
 	description string
@@ -30,23 +31,33 @@ func (i intake) toHtmlRow() string {
         <td>%s</td> 
         <td>%d</td> 
         <td>%s</td> 
+        <td>
+            <form hx-delete="/intake?date=%s&id=%d">
+                <button type="submit">Delete</button>
+            </form>
+        </td>
         `,
 		i.time.In(indiaLoc).Format("03:04 pm"),
 		i.amount,
-		i.description)
+		i.description,
+		i.time.In(indiaLoc).Format("02012006"),
+        i.id,
+    )
 }
 
 func mapRowsToIntake(q *sql.Rows) []intake {
     
     intakes := []intake{};
     for q.Next() {
+        var id int
         var day string
         var time t.Time
         var amount int
         var description string
 
-        q.Scan(&day, &time, &amount, &description)
+        q.Scan(&id, &day, &time, &amount, &description)
         intakes = append(intakes, intake{
+            id,
             time,
             amount,
             description,
@@ -93,6 +104,7 @@ func (d daychart) toHtml() string {
                                         <th>Time</th>
                                         <th>Amount (ml)</th>
                                         <th>Description</th>
+                                        <th>Delete</th>
                                         <th>Subtotal (ml)</th>
                                     </tr>
                                 </thead>
@@ -123,7 +135,7 @@ func handleIndexPageRequest(w http.ResponseWriter, r *http.Request) {
                 <body>
                     <div class="container">
                         <div><h2>Water Intake on %s</h2></div>
-                        <div hx-get="/intake?date=%s" hx-trigger="load">Fetching data...</div>
+                        <div hx-get="/intake?date=%s" hx-trigger="load, intakeUpdate from:body">Fetching data...</div>
                     </div>
                 </body>
             </html>
@@ -138,16 +150,55 @@ func handleIntakeRequest(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid Date", 400)
 		return
 	}
+	if ! (r.Method == "POST" || r.Method == "GET" || r.Method == "DELETE") {
+		http.Error(w, "Invalid Request", 400)
+		return
+    }
+	if r.Method == "DELETE" {
+		id := r.URL.Query().Get("id")
+		idVal, err := strconv.Atoi(id)
+        if err != nil {
+            log.Print("id should be a number ", err)
+            http.Error(w, "id should be a number", 400)
+            return
+        }
+        stmt, err := db.Prepare("delete from intake where ROWID = ? and day = ?;")
+        defer stmt.Close()
+
+        if err != nil {
+            log.Print("Couldn't create prepared statements", err)
+            return
+        }
+
+        _, err = stmt.Exec(idVal, dateParam)
+        if err != nil {
+            log.Print("Couldn't delete intake record", err)
+            return
+        }
+
+        w.Header().Set("HX-Trigger", "intakeUpdate")
+        w.WriteHeader(200)
+        return
+    }
 
 	if r.Method == "POST" {
 		amount := r.PostFormValue("amount")
 		description := r.PostFormValue("description")
 		amountVal, err := strconv.Atoi(amount)
 		if err != nil {
-			log.Fatal("Amount is in invalid format")
+			log.Print("Amount is in invalid format")
+            http.Error(w, "Amount is in invalid format", 400)
+            return
 		}
 
+        if dateParam != t.Now().Format("02012006") {
+			log.Print("Cannot edit/add intake into past days")
+            http.Error(w, "Cannot edit/add intake into past days", 400)
+            return
+        }
+
 		newIntake := intake{
+            0, // dummy intake id which will not be stored in the db
 			t.Now(),
 			amountVal,
 			description,
@@ -213,7 +264,7 @@ func (i intake) insertIntoDb(date string, db *sql.DB) {
 }
 
 func queryIntakes(date string, db *sql.DB) ([]intake, error) {
-    stmt, err := db.Prepare("select day, time, amount, description from intake where day = ?;")
+    stmt, err := db.Prepare("select ROWID, day, time, amount, description from intake where day = ?;")
     if err != nil {
         log.Fatal("Couldn't query intake records")
         return nil, err
@@ -228,6 +279,5 @@ func queryIntakes(date string, db *sql.DB) ([]intake, error) {
     defer rows.Close()
     intakes := mapRowsToIntake(rows)
     return intakes, nil
-
 }
 
