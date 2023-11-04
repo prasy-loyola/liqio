@@ -126,6 +126,10 @@ func handleIndexPageRequest(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `
             <html>
                 <head>
+                  <head>
+                    <meta charset="utf-8">
+                    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                    <meta name="viewport" content="width=device-width, initial-scale=1">
                     <title>
                         Track your water intake
                     </title>
