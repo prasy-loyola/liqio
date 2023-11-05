@@ -1,17 +1,17 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
+	_ "github.com/mattn/go-sqlite3"
 	"log"
 	"net/http"
 	"strconv"
 	t "time"
-    "database/sql"
-    _ "github.com/mattn/go-sqlite3"
 )
 
-type intake struct {
-    id          int
+type ioevent struct {
+	id          int
 	time        t.Time
 	amount      int
 	description string
@@ -19,7 +19,7 @@ type intake struct {
 
 type daychart struct {
 	date    t.Time
-	intakes []intake
+	intakes []ioevent
 	goal    int
 }
 
@@ -29,14 +29,14 @@ var _titleDateFormat = "2 Jan 2006"
 
 var indiaLoc, _ = t.LoadLocation("Asia/Kolkata")
 
-func (i intake) toHtmlRow() string {
+func (i ioevent) toHtmlRow(iotype string) string {
 
 	return fmt.Sprintf(`
         <td>%s</td> 
         <td>%d</td> 
         <td>%s</td> 
         <td>
-            <form hx-delete="/intake?date=%s&id=%d">
+            <form hx-delete="/%s?date=%s&id=%d">
                 <button type="submit">Delete</button>
             </form>
         </td>
@@ -44,31 +44,32 @@ func (i intake) toHtmlRow() string {
 		i.time.In(indiaLoc).Format(_timeFormat),
 		i.amount,
 		i.description,
+        iotype,
 		i.time.In(indiaLoc).Format(_dayFormat),
-        i.id,
-    )
+		i.id,
+	)
 }
 
-func mapRowsToIntake(q *sql.Rows) []intake {
-    
-    intakes := []intake{};
-    for q.Next() {
-        var id int
-        var day string
-        var time t.Time
-        var amount int
-        var description string
+func mapRowsToIOEvent(q *sql.Rows) []ioevent {
 
-        q.Scan(&id, &day, &time, &amount, &description)
-        intakes = append(intakes, intake{
-            id,
-            time,
-            amount,
-            description,
-        })
-    }
+	events := []ioevent{}
+	for q.Next() {
+		var id int
+		var day string
+		var time t.Time
+		var amount int
+		var description string
 
-    return intakes
+		q.Scan(&id, &day, &time, &amount, &description)
+		events = append(events, ioevent{
+			id,
+			time,
+			amount,
+			description,
+		})
+	}
+
+	return events
 }
 
 func (d daychart) getRemaining() int {
@@ -79,14 +80,21 @@ func (d daychart) getRemaining() int {
 	return remaining
 }
 
-func (d daychart) toHtml() string {
+func (d daychart) getTotal() int {
+	total := 0
+	for _, intk := range d.intakes {
+		total += intk.amount
+	}
+	return total
+}
+func (d daychart) toHtml(iotype string) string {
 
 	table := "<tbody>"
 	subtotal := 0
 
 	for _, intk := range d.intakes {
 		table += "<tr>"
-		table += intk.toHtmlRow()
+		table += intk.toHtmlRow(iotype)
 		subtotal += intk.amount
 		table += fmt.Sprintf("<td>%d</td>", subtotal)
 		table += "</tr>"
@@ -94,10 +102,16 @@ func (d daychart) toHtml() string {
 
 	table += "</tbody>"
 
-	result := fmt.Sprintf(`<div name="data" id="data" >
-                            <h4> Goal: <span class="badge badge-primary">%d ml </span></h4>
+    metadata := fmt.Sprintf(` <h4> Goal: <span class="badge badge-primary">%d ml </span></h4>
                             <h4> Remaining: <span class="badge badge-primary">%d ml </span></h4>
-                            <form hx-post="/intake?date=%s" hx-target="#data" hx-swap>
+    `, d.goal, d.getRemaining() )
+    if iotype == "output" {
+        metadata = fmt.Sprintf(`<h4> Today's output: <span class="badge badge-primary">%d ml </span></h4> `, d.getTotal() )
+
+    } 
+    result := fmt.Sprintf(`<div name="data" id="data" >
+                            %s
+                            <form hx-post="/%s?date=%s">
                                 <input type="text" value="%s" name="daypart" hidden/>
                                 <label for="time">Time:</label><input type="time" value="" name="time"/>
                                 <label for="amount">Amount:</label><input type="number" value="50" name="amount"/>
@@ -116,7 +130,7 @@ func (d daychart) toHtml() string {
                                 </thead>
                                 %s
                             </table>
-                        </div>`, d.goal, d.getRemaining(),d.date.Format(_dayFormat), d.date.Format(_dayFormat), table)
+                        </div>`, metadata, iotype, d.date.Format(_dayFormat), d.date.Format(_dayFormat), table)
 	return result
 }
 
@@ -144,15 +158,20 @@ func handleIndexPageRequest(w http.ResponseWriter, r *http.Request) {
                 </head>
                 <body>
                     <div class="container">
-                        <div><h2>Water Intake on %s</h2></div>
-                        <div hx-get="/intake?date=%s" hx-trigger="load, intakeUpdate from:body">Fetching data...</div>
+                        <h2>Liquid Input/Output on %s</h2>
+                        <div><h3>Water Intake</h3></div>
+                        <div hx-get="/intake?date=%s" hx-trigger="intakeUpdate, load">Fetching data...</div>
+                    </div>
+                    <div class="container">
+                        <div><h3>Urine Output</h3></div>
+                        <div hx-get="/output?date=%s" hx-trigger="outputUpdate, load">Fetching data...</div>
                     </div>
                 </body>
             </html>
-        `, date.Format(_titleDateFormat), date.Format(_dayFormat))
+        `, date.Format(_titleDateFormat), date.Format(_dayFormat), date.Format(_dayFormat))
 }
 
-func handleIntakeRequest(db *sql.DB, w http.ResponseWriter, r *http.Request) {
+func handleIORequest(iotype string, db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	dateParam := r.URL.Query().Get("date")
 	date, err := t.Parse(_dayFormat, dateParam)
 
@@ -160,36 +179,36 @@ func handleIntakeRequest(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid Date", 400)
 		return
 	}
-	if ! (r.Method == "POST" || r.Method == "GET" || r.Method == "DELETE") {
+	if !(r.Method == "POST" || r.Method == "GET" || r.Method == "DELETE") {
 		http.Error(w, "Invalid Request", 400)
 		return
-    }
+	}
 	if r.Method == "DELETE" {
 		id := r.URL.Query().Get("id")
 		idVal, err := strconv.Atoi(id)
-        if err != nil {
-            log.Print("id should be a number ", err)
-            http.Error(w, "id should be a number", 400)
-            return
-        }
-        stmt, err := db.Prepare("delete from intake where ROWID = ? and day = ?;")
-        defer stmt.Close()
+		if err != nil {
+			log.Print("id should be a number ", err)
+			http.Error(w, "id should be a number", 400)
+			return
+		}
+		stmt, err := db.Prepare("delete from " + iotype + " where ROWID = ? and day = ?;")
+		defer stmt.Close()
 
-        if err != nil {
-            log.Print("Couldn't create prepared statements", err)
-            return
-        }
+		if err != nil {
+			log.Print("Couldn't create prepared statements", err)
+			return
+		}
 
-        _, err = stmt.Exec(idVal, dateParam)
-        if err != nil {
-            log.Print("Couldn't delete intake record", err)
-            return
-        }
+		_, err = stmt.Exec(idVal, dateParam)
+		if err != nil {
+			log.Printf("Couldn't delete %s record. \n %s", iotype, err)
+			return
+		}
 
-        w.Header().Set("HX-Trigger", "intakeUpdate")
-        w.WriteHeader(200)
-        return
-    }
+		w.Header().Set("HX-Trigger", iotype+"Update")
+		w.WriteHeader(200)
+		return
+	}
 
 	if r.Method == "POST" {
 		time := r.PostFormValue("time")
@@ -198,51 +217,104 @@ func handleIntakeRequest(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 		amountVal, err := strconv.Atoi(amount)
 		if err != nil {
 			log.Print("Amount is in invalid format")
-            http.Error(w, "Amount is in invalid format", 400)
-            return
+			http.Error(w, "Amount is in invalid format", 400)
+			return
 		}
 
-        timeVal := t.Now()
-        if time != "" {
-            timeVal, err = t.ParseInLocation(_dayFormat + "15:04", dateParam + time, indiaLoc)
-            if err != nil {
-			    log.Print("Time is in invalid format", err)
-                http.Error(w, "Time is in invalid format", 400)
-                return
-            }
-        }
+		timeVal := t.Now()
+		if time != "" {
+			timeVal, err = t.ParseInLocation(_dayFormat+"15:04", dateParam+time, indiaLoc)
+			if err != nil {
+				log.Print("Time is in invalid format", err)
+				http.Error(w, "Time is in invalid format", 400)
+				return
+			}
+		}
 
-		newIntake := intake{
-            0, // dummy intake id which will not be stored in the db
-            timeVal.UTC(),
+		newIntake := ioevent{
+			0, // dummy intake id which will not be stored in the db
+			timeVal.UTC(),
 			amountVal,
 			description,
 		}
-        newIntake.insertIntoDb(dateParam, db)
+		newIntake.insertIntoDb(iotype, dateParam, db)
+		w.Header().Set("HX-Trigger", iotype+"Update")
+		w.WriteHeader(200)
+		return
 	}
-    intakes, err := queryIntakes(dateParam, db)
+	intakes, err := queryIntakes(iotype, dateParam, db)
 
-    chart := daychart{
-        date, 
-        intakes,
-	    1300,
-    }
+	chart := daychart{
+		date,
+		intakes,
+		1300,
+	}
 
-	fmt.Fprint(w, chart.toHtml())
+	fmt.Fprint(w, chart.toHtml(iotype))
 }
 
+func handleOutputRequest(db *sql.DB, w http.ResponseWriter, r *http.Request) {
+	log.Print("ERROR: no implemented")
+	http.Error(w, "ERROR: Output not implemented", 500)
+}
+
+func setupTable(db *sql.DB) error {
+	createTableStmt := `
+        create table IF NOT EXISTS intake (day text, time TIMESTAMP default CURRENT_TIMESTAMP, amount number, description text);
+        create table IF NOT EXISTS output (day text, time TIMESTAMP default CURRENT_TIMESTAMP, amount number, description text);
+    `
+	_, err := db.Exec(createTableStmt)
+	if err != nil {
+		log.Fatal("Couldn't create table or insert value", err)
+	}
+	return err
+}
+
+func (i ioevent) insertIntoDb(iotype string, date string, db *sql.DB) {
+	stmt, err := db.Prepare("insert into " + iotype + " (day, time, amount, description) values (?, ?, ?, ?);")
+	defer stmt.Close()
+
+	if err != nil {
+		log.Print("Couldn't create prepared statements", err)
+	}
+
+	_, err = stmt.Exec(date, i.time, i.amount, i.description)
+	if err != nil {
+		log.Printf("Couldn't insert %s record\n %s", iotype, err)
+	}
+}
+
+func queryIntakes(iotype string, date string, db *sql.DB) ([]ioevent, error) {
+	stmt, err := db.Prepare("select ROWID, day, time, amount, description from " + iotype + " where day = ? order by time;")
+	if err != nil {
+		log.Printf("Couldn't query %s records \n %s", iotype, err)
+		return nil, err
+	}
+	defer stmt.Close()
+	rows, err := stmt.Query(date)
+	if err != nil {
+		log.Printf("Couldn't query %s records \n %s", iotype, err)
+		return nil, err
+	}
+
+	defer rows.Close()
+	return mapRowsToIOEvent(rows), nil
+}
 
 func main() {
-    
-    db, err := sql.Open("sqlite3", "./intake.db")
-    if err != nil {
-        log.Fatal("Couldn't open database")
-    }
-    //setupTable(db)
-    defer db.Close()	
+
+	db, err := sql.Open("sqlite3", "./intake.db")
+	if err != nil {
+		log.Fatal("Couldn't open database")
+	}
+	setupTable(db)
+	defer db.Close()
 
 	http.HandleFunc("/intake", func(w http.ResponseWriter, r *http.Request) {
-		handleIntakeRequest(db, w, r)
+		handleIORequest("intake", db, w, r)
+	})
+	http.HandleFunc("/output", func(w http.ResponseWriter, r *http.Request) {
+		handleIORequest("output", db, w, r)
 	})
 	http.HandleFunc("/", handleIndexPageRequest)
 
@@ -250,49 +322,3 @@ func main() {
 		log.Fatal("Couldn't start server", err)
 	}
 }
-
-
-func setupTable(db *sql.DB) error {
-    createTableStmt := `
-        create table intake (day text, time TIMESTAMP default CURRENT_TIMESTAMP, amount number, description text);
-    `
-    _, err := db.Exec(createTableStmt)
-    if err != nil {
-        log.Fatal("Couldn't create table or insert value")
-    }
-    return err
-}
-
-
-func (i intake) insertIntoDb(date string, db *sql.DB) {
-    stmt, err := db.Prepare("insert into intake(day, time, amount, description) values (?, ?, ?, ?);")
-    defer stmt.Close()
-
-    if err != nil {
-        log.Fatal("Couldn't create prepared statements", err)
-    }
-
-    _, err = stmt.Exec(date, i.time, i.amount, i.description)
-    if err != nil {
-        log.Fatal("Couldn't insert intake record", err)
-    }
-}
-
-func queryIntakes(date string, db *sql.DB) ([]intake, error) {
-    stmt, err := db.Prepare("select ROWID, day, time, amount, description from intake where day = ? order by time;")
-    if err != nil {
-        log.Fatal("Couldn't query intake records")
-        return nil, err
-    }
-    defer stmt.Close()
-    rows, err := stmt.Query(date)
-    if err != nil {
-        log.Fatal("Couldn't query intake records")
-        return nil, err
-    }
-    
-    defer rows.Close()
-    intakes := mapRowsToIntake(rows)
-    return intakes, nil
-}
-
