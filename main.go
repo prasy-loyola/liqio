@@ -23,6 +23,10 @@ type daychart struct {
 	goal    int
 }
 
+var _dayFormat = "02012006"
+var _timeFormat = "03:04 pm"
+var _titleDateFormat = "2 Jan 2006"
+
 var indiaLoc, _ = t.LoadLocation("Asia/Kolkata")
 
 func (i intake) toHtmlRow() string {
@@ -37,10 +41,10 @@ func (i intake) toHtmlRow() string {
             </form>
         </td>
         `,
-		i.time.In(indiaLoc).Format("03:04 pm"),
+		i.time.In(indiaLoc).Format(_timeFormat),
 		i.amount,
 		i.description,
-		i.time.In(indiaLoc).Format("02012006"),
+		i.time.In(indiaLoc).Format(_dayFormat),
         i.id,
     )
 }
@@ -94,6 +98,8 @@ func (d daychart) toHtml() string {
                             <h4> Goal: <span class="badge badge-primary">%d ml </span></h4>
                             <h4> Remaining: <span class="badge badge-primary">%d ml </span></h4>
                             <form hx-post="/intake?date=%s" hx-target="#data" hx-swap>
+                                <input type="text" value="%s" name="daypart" hidden/>
+                                <label for="time">Time:</label><input type="time" value="" name="time"/>
                                 <label for="amount">Amount:</label><input type="number" value="50" name="amount"/>
                                 <label for="description">Description:</label><input type="text" name="description"/>
                                 <button type="submit">Add</button>
@@ -110,14 +116,14 @@ func (d daychart) toHtml() string {
                                 </thead>
                                 %s
                             </table>
-                        </div>`, d.goal, d.getRemaining(), d.date.Format("02012006"), table)
+                        </div>`, d.goal, d.getRemaining(),d.date.Format(_dayFormat), d.date.Format(_dayFormat), table)
 	return result
 }
 
 func handleIndexPageRequest(w http.ResponseWriter, r *http.Request) {
 
 	dateParam := r.URL.Query().Get("date")
-	date, err := t.Parse("02012006", dateParam)
+	date, err := t.Parse(_dayFormat, dateParam)
 
 	if err != nil {
 		date = t.Now()
@@ -143,12 +149,12 @@ func handleIndexPageRequest(w http.ResponseWriter, r *http.Request) {
                     </div>
                 </body>
             </html>
-        `, date.Format("2 Jan 2006"), date.Format("02012006"))
+        `, date.Format(_titleDateFormat), date.Format(_dayFormat))
 }
 
 func handleIntakeRequest(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	dateParam := r.URL.Query().Get("date")
-	date, err := t.Parse("02012006", dateParam)
+	date, err := t.Parse(_dayFormat, dateParam)
 
 	if err != nil {
 		http.Error(w, "Invalid Date", 400)
@@ -186,6 +192,7 @@ func handleIntakeRequest(db *sql.DB, w http.ResponseWriter, r *http.Request) {
     }
 
 	if r.Method == "POST" {
+		time := r.PostFormValue("time")
 		amount := r.PostFormValue("amount")
 		description := r.PostFormValue("description")
 		amountVal, err := strconv.Atoi(amount)
@@ -195,15 +202,19 @@ func handleIntakeRequest(db *sql.DB, w http.ResponseWriter, r *http.Request) {
             return
 		}
 
-        if dateParam != t.Now().Format("02012006") {
-			log.Print("Cannot edit/add intake into past days")
-            http.Error(w, "Cannot edit/add intake into past days", 400)
-            return
+        timeVal := t.Now()
+        if time != "" {
+            timeVal, err = t.ParseInLocation(_dayFormat + "15:04", dateParam + time, indiaLoc)
+            if err != nil {
+			    log.Print("Time is in invalid format", err)
+                http.Error(w, "Time is in invalid format", 400)
+                return
+            }
         }
 
 		newIntake := intake{
             0, // dummy intake id which will not be stored in the db
-			t.Now(),
+            timeVal.UTC(),
 			amountVal,
 			description,
 		}
@@ -254,21 +265,21 @@ func setupTable(db *sql.DB) error {
 
 
 func (i intake) insertIntoDb(date string, db *sql.DB) {
-    stmt, err := db.Prepare("insert into intake(day, amount, description) values (?, ?, ?);")
+    stmt, err := db.Prepare("insert into intake(day, time, amount, description) values (?, ?, ?, ?);")
     defer stmt.Close()
 
     if err != nil {
         log.Fatal("Couldn't create prepared statements", err)
     }
 
-    _, err = stmt.Exec(date, i.amount, i.description)
+    _, err = stmt.Exec(date, i.time, i.amount, i.description)
     if err != nil {
         log.Fatal("Couldn't insert intake record", err)
     }
 }
 
 func queryIntakes(date string, db *sql.DB) ([]intake, error) {
-    stmt, err := db.Prepare("select ROWID, day, time, amount, description from intake where day = ?;")
+    stmt, err := db.Prepare("select ROWID, day, time, amount, description from intake where day = ? order by time;")
     if err != nil {
         log.Fatal("Couldn't query intake records")
         return nil, err
